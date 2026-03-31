@@ -125,15 +125,22 @@ func (d *dnsPTRRecordResource) Create(ctx context.Context, req resource.CreateRe
 	msg := new(dns.Msg)
 	msg.SetUpdate(plan.Zone.ValueString())
 
-	//Insert new PTR record
-	rrStrInsert := fmt.Sprintf("%s %d PTR %s", rec_fqdn, plan.TTL.ValueInt64(), plan.PTR.ValueString())
-
-	rr_insert, err := dns.NewRR(rrStrInsert)
+	// Remove any existing PTR RRset before inserting. Prevents stale records
+	// from accumulating when an IP is reused by a different host.
+	rrStrRemove := fmt.Sprintf("%s 0 PTR", rec_fqdn)
+	rr_remove, err := dns.NewRR(rrStrRemove)
 	if err != nil {
-		resp.Diagnostics.AddError(fmt.Sprintf("Error reading DNS record (%s):", rrStrInsert), err.Error())
+		resp.Diagnostics.AddError(fmt.Sprintf("Error building DNS remove record (%s):", rrStrRemove), err.Error())
 		return
 	}
+	msg.RemoveRRset([]dns.RR{rr_remove})
 
+	rrStrInsert := fmt.Sprintf("%s %d PTR %s", rec_fqdn, plan.TTL.ValueInt64(), plan.PTR.ValueString())
+	rr_insert, err := dns.NewRR(rrStrInsert)
+	if err != nil {
+		resp.Diagnostics.AddError(fmt.Sprintf("Error building DNS insert record (%s):", rrStrInsert), err.Error())
+		return
+	}
 	msg.Insert([]dns.RR{rr_insert})
 
 	r, err := exchange(msg, true, d.client)
@@ -155,7 +162,10 @@ func (d *dnsPTRRecordResource) Create(ctx context.Context, req resource.CreateRe
 
 	if len(answers) > 0 {
 		if len(answers) > 1 {
-			resp.Diagnostics.AddError("Error querying DNS record:", "multiple responses received")
+			answers = filterPTRAnswers(answers, plan.PTR.ValueString())
+		}
+		if len(answers) == 0 {
+			resp.Diagnostics.AddError("Error querying DNS record:", "created PTR record not found in readback")
 			return
 		}
 		record := answers[0]
@@ -193,8 +203,14 @@ func (d *dnsPTRRecordResource) Read(ctx context.Context, req resource.ReadReques
 
 	if len(answers) > 0 {
 		if len(answers) > 1 {
-			resp.Diagnostics.AddError("Error querying DNS record:", "multiple responses received")
-			return
+			// Tolerate stale duplicate PTR records (e.g. from IP reuse).
+			// Find the answer matching our managed value; if none match,
+			// remove from state so Terraform can recreate it.
+			answers = filterPTRAnswers(answers, state.PTR.ValueString())
+			if len(answers) == 0 {
+				resp.State.RemoveResource(ctx)
+				return
+			}
 		}
 		record := answers[0]
 		ptr, ttl, err := getPtrVal(record)
@@ -277,7 +293,10 @@ func (d *dnsPTRRecordResource) Update(ctx context.Context, req resource.UpdateRe
 
 	if len(answers) > 0 {
 		if len(answers) > 1 {
-			resp.Diagnostics.AddError("Error querying DNS record:", "multiple responses received")
+			answers = filterPTRAnswers(answers, plan.PTR.ValueString())
+		}
+		if len(answers) == 0 {
+			resp.Diagnostics.AddError("Error querying DNS record:", "updated PTR record not found in readback")
 			return
 		}
 		record := answers[0]
@@ -326,6 +345,18 @@ func (d *dnsPTRRecordResource) ImportState(ctx context.Context, req resource.Imp
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+// filterPTRAnswers returns only the PTR answer whose target matches the
+// expected value. Used to tolerate stale duplicate PTR records that appear
+// when an IP is reused by a different host.
+func filterPTRAnswers(answers []dns.RR, expected string) []dns.RR {
+	for _, ans := range answers {
+		if ptr, ok := ans.(*dns.PTR); ok && ptr.Ptr == expected {
+			return []dns.RR{ans}
+		}
+	}
+	return nil
 }
 
 type ptrRecordSetResourceModel struct {

@@ -73,10 +73,16 @@ func (p *dnsProvider) Schema(ctx context.Context, req provider.SchemaRequest, re
 							Description: "How many times to retry on connection timeout. Defaults to `3`. " +
 								"Value can also be sourced from the DNS_UPDATE_RETRIES environment variable.",
 						},
-						"recursive": schema.BoolAttribute{
-							Optional:    true,
-							Description: "Enable the Recursion Desired (RD) flag on DNS queries",
-						},
+					"recursive": schema.BoolAttribute{
+						Optional:    true,
+						Description: "Enable the Recursion Desired (RD) flag on DNS queries",
+					},
+					"parallelism": schema.Int64Attribute{
+						Optional: true,
+						Description: "Maximum number of concurrent DNS update operations. Set to 0 for unlimited. " +
+							"Defaults to `10`. Increase this (along with `terraform apply -parallelism`) to speed up " +
+							"large syncs. Value can also be sourced from the DNS_UPDATE_PARALLELISM environment variable.",
+					},
 						"key_name": schema.StringAttribute{
 							Optional: true,
 							Validators: []validator.String{
@@ -172,7 +178,7 @@ func (p *dnsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 	var providerConfig providerModel
 
 	var server, transport, timeout, keyname, keyalgo, keysecret, realm, username, password, keytab string
-	var port, retries int
+	var port, retries, parallelism int
 	var duration time.Duration
 	var gssapi, recursive bool
 	var configErr error
@@ -290,6 +296,23 @@ func (p *dnsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 		}
 	}
 
+	if providerUpdateConfig[0].Parallelism.IsNull() {
+		parallelism = defaultParallelism
+
+		if len(os.Getenv("DNS_UPDATE_PARALLELISM")) > 0 {
+			parallelismStr := os.Getenv("DNS_UPDATE_PARALLELISM")
+
+			var err error
+			parallelism, err = strconv.Atoi(parallelismStr)
+			if err != nil {
+				resp.Diagnostics.AddError("Invalid DNS_UPDATE_PARALLELISM environment variable:", err.Error())
+				return
+			}
+		}
+	} else {
+		parallelism = int(providerUpdateConfig[0].Parallelism.ValueInt64())
+	}
+
 	if providerUpdateConfig[0].KeyName.IsNull() && len(os.Getenv("DNS_UPDATE_KEYNAME")) > 0 {
 		keyname = os.Getenv("DNS_UPDATE_KEYNAME")
 	}
@@ -331,20 +354,21 @@ func (p *dnsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 	}
 
 	config := Config{
-		server:    server,
-		port:      port,
-		transport: transport,
-		timeout:   duration,
-		retries:   retries,
-		recursive: recursive,
-		keyname:   keyname,
-		keyalgo:   keyalgo,
-		keysecret: keysecret,
-		gssapi:    gssapi,
-		realm:     realm,
-		username:  username,
-		password:  password,
-		keytab:    keytab,
+		server:      server,
+		port:        port,
+		transport:   transport,
+		timeout:     duration,
+		retries:     retries,
+		recursive:   recursive,
+		parallelism: parallelism,
+		keyname:     keyname,
+		keyalgo:     keyalgo,
+		keysecret:   keysecret,
+		gssapi:      gssapi,
+		realm:       realm,
+		username:    username,
+		password:    password,
+		keytab:      keytab,
 	}
 
 	resp.ResourceData, configErr = config.Client(ctx)
@@ -388,6 +412,7 @@ type providerUpdateModel struct {
 	Timeout      types.String `tfsdk:"timeout"`
 	Retries      types.Int64  `tfsdk:"retries"`
 	Recursive    types.Bool   `tfsdk:"recursive"`
+	Parallelism  types.Int64  `tfsdk:"parallelism"`
 	KeyName      types.String `tfsdk:"key_name"`
 	KeyAlgorithm types.String `tfsdk:"key_algorithm"`
 	KeySecret    types.String `tfsdk:"key_secret"`
@@ -412,6 +437,7 @@ func (m providerUpdateModel) objectAttributeTypes() map[string]attr.Type {
 		"timeout":       types.StringType,
 		"transport":     types.StringType,
 		"recursive":     types.BoolType,
+		"parallelism":   types.Int64Type,
 	}
 }
 

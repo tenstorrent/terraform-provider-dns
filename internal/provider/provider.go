@@ -19,10 +19,11 @@ import (
 )
 
 const (
-	defaultPort      = 53
-	defaultRetries   = 3
-	defaultTimeout   = "0"
-	defaultTransport = "udp"
+	defaultPort        = 53
+	defaultRetries     = 3
+	defaultTimeout     = "0"
+	defaultTransport   = "udp"
+	defaultParallelism = 10
 )
 
 // New returns a *schema.Provider for DNS dynamic updates.
@@ -93,12 +94,29 @@ func New() *schema.Provider {
 							Description: "How many times to retry on connection timeout. Defaults to `3`. " +
 								"Value can also be sourced from the DNS_UPDATE_RETRIES environment variable.",
 						},
-						"recursive": {
-							Type:        schema.TypeBool,
-							Optional:    true,
-							Default:     false,
-							Description: "Enable the Recursion Desired (RD) flag on DNS queries",
+					"recursive": {
+						Type:        schema.TypeBool,
+						Optional:    true,
+						Default:     false,
+						Description: "Enable the Recursion Desired (RD) flag on DNS queries",
+					},
+					"parallelism": {
+						Type:     schema.TypeInt,
+						Optional: true,
+						DefaultFunc: func() (interface{}, error) {
+							if env := os.Getenv("DNS_UPDATE_PARALLELISM"); env != "" {
+								p, err := strconv.Atoi(env)
+								if err != nil {
+									err = fmt.Errorf("invalid DNS_UPDATE_PARALLELISM environment variable: %s", err)
+								}
+								return p, err
+							}
+							return defaultParallelism, nil
 						},
+						Description: "Maximum number of concurrent DNS update operations. Set to 0 for unlimited. " +
+							"Defaults to `10`. Increase this (along with `terraform apply -parallelism`) to speed up " +
+							"large syncs. Value can also be sourced from the DNS_UPDATE_PARALLELISM environment variable.",
+					},
 						"key_name": {
 							Type:        schema.TypeString,
 							Optional:    true,
@@ -183,7 +201,7 @@ func New() *schema.Provider {
 func configureProvider(ctx context.Context, d *schema.ResourceData) (interface{}, diag.Diagnostics) {
 
 	var server, transport, timeout, keyname, keyalgo, keysecret, realm, username, password, keytab string
-	var port, retries int
+	var port, retries, parallelism int
 	var duration time.Duration
 	var gssapi, recursive bool
 
@@ -214,6 +232,10 @@ func configureProvider(ctx context.Context, d *schema.ResourceData) (interface{}
 		if val, ok := update["recursive"]; ok {
 			//nolint:forcetypeassert
 			recursive = val.(bool)
+		}
+		if val, ok := update["parallelism"]; ok {
+			//nolint:forcetypeassert
+			parallelism = val.(int)
 		}
 		if val, ok := update["key_name"]; ok {
 			//nolint:forcetypeassert
@@ -319,6 +341,17 @@ func configureProvider(ctx context.Context, d *schema.ResourceData) (interface{}
 		if realm != "" || username != "" || password != "" || keytab != "" {
 			gssapi = true
 		}
+
+		if len(os.Getenv("DNS_UPDATE_PARALLELISM")) > 0 {
+			var err error
+			env := os.Getenv("DNS_UPDATE_PARALLELISM")
+			parallelism, err = strconv.Atoi(env)
+			if err != nil {
+				return nil, diag.Errorf("invalid DNS_UPDATE_PARALLELISM environment variable: %s", err.Error())
+			}
+		} else {
+			parallelism = defaultParallelism
+		}
 	}
 
 	if timeout != "" {
@@ -339,20 +372,21 @@ func configureProvider(ctx context.Context, d *schema.ResourceData) (interface{}
 	}
 
 	config := Config{
-		server:    server,
-		port:      port,
-		transport: transport,
-		timeout:   duration,
-		retries:   retries,
-		keyname:   keyname,
-		keyalgo:   keyalgo,
-		keysecret: keysecret,
-		gssapi:    gssapi,
-		realm:     realm,
-		username:  username,
-		password:  password,
-		keytab:    keytab,
-		recursive: recursive,
+		server:      server,
+		port:        port,
+		transport:   transport,
+		timeout:     duration,
+		retries:     retries,
+		keyname:     keyname,
+		keyalgo:     keyalgo,
+		keysecret:   keysecret,
+		gssapi:      gssapi,
+		realm:       realm,
+		username:    username,
+		password:    password,
+		keytab:      keytab,
+		recursive:   recursive,
+		parallelism: parallelism,
 	}
 
 	dnsClient, err := config.Client(ctx)
@@ -472,7 +506,18 @@ func isTimeout(err error) bool {
 
 func exchange(msg *dns.Msg, tsig bool, client *DNSClient) (*dns.Msg, error) {
 
-	c := client.c
+	// Acquire a slot from the semaphore to limit concurrent in-flight exchanges.
+	// sem is nil when parallelism is unlimited (parallelism = 0 in config).
+	if client.sem != nil {
+		<-client.sem
+		defer func() { client.sem <- struct{}{} }()
+	}
+
+	// Use a per-call copy of the dns.Client to avoid a data race on the Net
+	// field, which we mutate locally when falling back from UDP to TCP.
+	localC := *client.c
+	c := &localC
+
 	srv_addr := client.srv_addr
 	keyname := client.keyname
 	keyalgo := client.keyalgo

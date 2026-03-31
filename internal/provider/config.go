@@ -18,36 +18,40 @@ import (
 )
 
 type Config struct {
-	server    string
-	port      int
-	transport string
-	timeout   time.Duration
-	retries   int
-	keyname   string
-	keyalgo   string
-	keysecret string
-	gssapi    bool
-	realm     string
-	username  string
-	password  string
-	keytab    string
-	recursive bool
+	server      string
+	port        int
+	transport   string
+	timeout     time.Duration
+	retries     int
+	keyname     string
+	keyalgo     string
+	keysecret   string
+	gssapi      bool
+	realm       string
+	username    string
+	password    string
+	keytab      string
+	recursive   bool
+	parallelism int
 }
 
 type DNSClient struct {
-	c         *dns.Client
-	srv_addr  string
-	transport string
-	retries   int
-	keyname   string
-	keysecret string
-	keyalgo   string
-	gssClient *gss.Client
-	realm     string
-	username  string
-	password  string
-	keytab    string
-	recursive bool
+	c           *dns.Client
+	srv_addr    string
+	transport   string
+	retries     int
+	keyname     string
+	keysecret   string
+	keyalgo     string
+	gssClient   *gss.Client
+	realm       string
+	username    string
+	password    string
+	keytab      string
+	recursive   bool
+	parallelism int
+	// sem limits the number of concurrent in-flight DNS exchanges. Nil means unlimited.
+	sem chan struct{}
 }
 
 // Client configures and returns a fully initialized DNSClient.
@@ -78,6 +82,15 @@ func (c *Config) Client(ctx context.Context) (interface{}, error) {
 	client.password = c.password
 	client.keytab = c.keytab
 	client.recursive = c.recursive
+	client.parallelism = c.parallelism
+	if c.parallelism > 0 {
+		client.sem = make(chan struct{}, c.parallelism)
+		// Pre-fill the semaphore so it acts as a counting semaphore
+		// (acquire = send, release = receive).
+		for i := 0; i < c.parallelism; i++ {
+			client.sem <- struct{}{}
+		}
+	}
 	if !c.gssapi && c.keyname != "" {
 		if !dns.IsFqdn(c.keyname) {
 			return nil, fmt.Errorf("Error configuring provider: \"key_name\" should be fully-qualified")
