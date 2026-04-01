@@ -1,3 +1,14 @@
+## 3.6.0 (March 31, 2026) — Tenstorrent fork
+
+ENHANCEMENTS:
+
+* `provider`: add `parallelism` configuration option (and `DNS_UPDATE_PARALLELISM` environment variable) to limit concurrent in-flight DNS UPDATE operations. Defaults to `10`; set to `0` for unlimited. Use alongside `terraform apply -parallelism=N` to speed up large DNS sync jobs. ([tenstorrent/terraform-provider-dns](https://github.com/tenstorrent/terraform-provider-dns))
+
+BUG FIXES:
+
+* `resource/dns_ptr_record`: fix crash with `multiple responses received` when BIND returns duplicate PTR records for a reverse-DNS name (common during IP reuse). The provider now filters the answer set for the managed record rather than treating multiple answers as a fatal error. Read gracefully removes the resource from state when no matching record is found, allowing Terraform to recreate it. ([tenstorrent/terraform-provider-dns](https://github.com/tenstorrent/terraform-provider-dns))
+* `resource/dns_ptr_record`: Create now issues an atomic `RemoveRRset` before `Insert` to prevent stale PTR records from accumulating when an IP address is reassigned to a new host. ([tenstorrent/terraform-provider-dns](https://github.com/tenstorrent/terraform-provider-dns))
+
 ## 3.5.0 (January 28, 2026)
 
 ENHANCEMENTS:

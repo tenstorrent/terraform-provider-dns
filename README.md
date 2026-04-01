@@ -1,3 +1,43 @@
+# Terraform Provider: DNS (Tenstorrent fork)
+
+> **This is Tenstorrent's production fork of [hashicorp/terraform-provider-dns](https://github.com/hashicorp/terraform-provider-dns).**
+> Releases are published at [github.com/tenstorrent/terraform-provider-dns](https://github.com/tenstorrent/terraform-provider-dns/releases).
+> The upstream provider source is tracked in the `upstream` remote; we rebase onto new upstream releases periodically.
+
+## Changes vs. upstream
+
+### Bug fix: PTR record conflict crash (IP reuse)
+
+**Problem:** When an IP address is reassigned to a new host, BIND can end up with multiple PTR records for the same reverse-DNS name. The stock provider treats this as a fatal error (`multiple responses received`) with no recovery path — every subsequent `plan`, `refresh`, and `apply` crashes until an operator manually cleans DNS with `nsupdate`.
+
+**Fix (v3.6.0):** `resource/dns_ptr_record` now:
+
+- Filters the DNS answer set for the record matching the managed value rather than hard-erroring on multiple answers.
+- Issues an atomic `RemoveRRset` before `Insert` on Create, preventing stale PTR records from accumulating in the first place.
+- Gracefully removes the resource from state when no matching record is found, so Terraform can recreate it cleanly.
+
+See `utility/ptr-conflict-repro/` in the [terraform repo](https://github.com/tenstorrent/terraform) for a reproducibility and recovery test harness with logged proof of the fix.
+
+### Enhancement: configurable DNS update parallelism
+
+**Problem:** The stock provider serializes all DNS UPDATE operations, making large DNS sync jobs (hundreds of records) unnecessarily slow.
+
+**Fix (v3.6.0):** A `parallelism` attribute is available in the provider `update` block, and via the `DNS_UPDATE_PARALLELISM` environment variable. A channel-based counting semaphore limits concurrent in-flight DNS exchanges. Default is `10`; set to `0` for unlimited. Use alongside `terraform apply -parallelism=N`.
+
+```hcl
+provider "dns" {
+  update {
+    server        = "10.0.0.1"
+    key_algorithm = "hmac-sha256"
+    key_name      = "tsig-key."
+    key_secret    = var.tsig_key_secret
+    parallelism   = 100  # default 10, 0 = unlimited
+  }
+}
+```
+
+---
+
 # Terraform Provider: DNS
 
 The DNS provider supports resources that perform DNS updates ([RFC 2136](https://datatracker.ietf.org/doc/html/rfc2136)) and data sources for reading DNS information. The provider can be configured with secret key based transaction authentication ([RFC 2845](https://datatracker.ietf.org/doc/html/rfc2845)) or GSS-TSIG ([RFC 3645](https://datatracker.ietf.org/doc/html/rfc3645)).
