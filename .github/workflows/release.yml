@@ -1,45 +1,33 @@
-# Release workflow for the Tenstorrent fork of terraform-provider-dns.
-# Triggers on vX.Y.Z tags pushed to the repo.
-# Requires two repository secrets:
-#   GPG_PRIVATE_KEY  — ASCII-armored GPG private key used to sign the release checksums
-#   GPG_FINGERPRINT  — fingerprint of the above key (passed to gpg --local-user)
-#   GITHUB_TOKEN     — automatically provided by Actions
-
 name: release
-
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
-
-permissions:
-  contents: write
-
+      - "v*"
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Unshallow
+        run: git fetch --prune --unshallow
+      - name: Set up Go
+        uses: actions/setup-go@v6
         with:
-          fetch-depth: 0
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: "go.mod"
-          cache: true
-
+          go-version-file: go.mod
       - name: Import GPG key
-        uses: crazy-max/ghaction-import-gpg@v6
         id: import_gpg
+        uses: crazy-max/ghaction-import-gpg@v7.0.0
         with:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
-          passphrase: ${{ secrets.GPG_PASSPHRASE }}
-
+          passphrase: ${{ secrets.PASSPHRASE }}
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7.0.0
         with:
-          version: "~> v2"
+          version: latest
           args: release --clean
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

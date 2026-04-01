@@ -1,6 +1,3 @@
-# GoReleaser configuration for the Tenstorrent fork of terraform-provider-dns.
-# Triggered by pushing a vX.Y.Z tag to main.
-# Requires a GPG_FINGERPRINT secret and a GPG private key secret in the repo.
 version: 2
 
 before:
@@ -10,18 +7,19 @@ before:
 builds:
   - env:
       - CGO_ENABLED=0
+    mod_timestamp: "{{ .CommitTimestamp }}"
     flags:
       - -trimpath
     ldflags:
-      - -s -w
+      - "-s -w"
     goos:
-      - freebsd
       - windows
       - linux
       - darwin
+      - freebsd
     goarch:
-      - "386"
       - amd64
+      - "386"
       - arm
       - arm64
     ignore:
@@ -35,6 +33,7 @@ builds:
         goarch: arm
       - goos: freebsd
         goarch: arm64
+    binary: "{{ .ProjectName }}_v{{ .Version }}"
 
 archives:
   - format: zip
@@ -48,9 +47,6 @@ signs:
   - artifacts: checksum
     args:
       - "--batch"
-      - "--no-tty"
-      - "--pinentry-mode"
-      - "loopback"
       - "--local-user"
       - "{{ .Env.GPG_FINGERPRINT }}"
       - "--output"
@@ -59,10 +55,9 @@ signs:
       - "${artifact}"
 
 release:
-  draft: false
   extra_files:
     - glob: "terraform-registry-manifest.json"
       name_template: "{{ .ProjectName }}_{{ .Version }}_manifest.json"
 
 changelog:
-  use: github-native
+  disable: true
